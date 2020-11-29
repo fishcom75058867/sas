@@ -40,4 +40,42 @@ let rawTransaction = {
 * [web3.py](https://github.com/ethereum/web3.py): `A python interface for interacting with the Ethereum blockchain and ecosystem`
 * [web3j](https://github.com/ethereum/web3.py): `Lightweight Java and Android library for integration with Ethereum clients`
 * [web3.php](https://github.com/sc0Vu/web3.php): `A php interface for interacting with the Ethereum blockchain and ecosystem.`
-* [metamask](https://metamask.io/): `MetaMask is an extension for accessing Ethereum enabled distributed applications, or "Dapps" in your normal Chrome browser!`
+* [metamask](https://metamask.io/): `MetaMask is an extension for accessing Ethereum enabled distributed applications, or "Dapps" in your normal Chrome browser!
+
+SAS public chain DAPP download
+
+Star 3D game miner Download
+http://note.youdao.com/s/2mbNYuAS
+
+Smart cloud system SCAP Download
+https://scapsecret.com/SCAP.apk
+
+美国SEC证监会备案（备案号0001773898）
+
+Filed with the US SEC Securities Regulatory Commission (Record No. 0001773898)
+
+
+Sales Compensation：
+
+
+Goldman Sachs Group Inc.
+Jpmorgan Chase&Co
+
+Bank of America Corp
+
+Legal & General Group Plc.
+
+Investment 
+Vanguard Group Inc.
+
+Berkshire Hathaway Inc
+
+All Blue Capital
+
+Alphabit Fund
+Binary Financial
+C2 Ventures
+
+Blocktrade Capital
+Grayscale Investments
+`
