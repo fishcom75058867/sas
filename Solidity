@@ -1,0 +1,721 @@
+Solidity by Example
+Voting
+The following contract is quite complex, but showcases a lot of Solidity’s features. It implements a voting contract. Of course, the main problems of electronic voting is how to assign voting rights to the correct persons and how to prevent manipulation. We will not solve all problems here, but at least we will show how delegated voting can be done so that vote counting is automatic and completely transparent at the same time.
+
+The idea is to create one contract per ballot, providing a short name for each option. Then the creator of the contract who serves as chairperson will give the right to vote to each address individually.
+
+The persons behind the addresses can then choose to either vote themselves or to delegate their vote to a person they trust.
+
+At the end of the voting time, winningProposal() will return the proposal with the largest number of votes.
+
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity >=0.7.0 <0.9.0;
+/// @title Voting with delegation.
+contract Ballot {
+    // This declares a new complex type which will
+    // be used for variables later.
+    // It will represent a single voter.
+    struct Voter {
+        uint weight; // weight is accumulated by delegation
+        bool voted;  // if true, that person already voted
+        address delegate; // person delegated to
+        uint vote;   // index of the voted proposal
+    }
+
+    // This is a type for a single proposal.
+    struct Proposal {
+        bytes32 name;   // short name (up to 32 bytes)
+        uint voteCount; // number of accumulated votes
+    }
+
+    address public chairperson;
+
+    // This declares a state variable that
+    // stores a `Voter` struct for each possible address.
+    mapping(address => Voter) public voters;
+
+    // A dynamically-sized array of `Proposal` structs.
+    Proposal[] public proposals;
+
+    /// Create a new ballot to choose one of `proposalNames`.
+    constructor(bytes32[] memory proposalNames) {
+        chairperson = msg.sender;
+        voters[chairperson].weight = 1;
+
+        // For each of the provided proposal names,
+        // create a new proposal object and add it
+        // to the end of the array.
+        for (uint i = 0; i < proposalNames.length; i++) {
+            // `Proposal({...})` creates a temporary
+            // Proposal object and `proposals.push(...)`
+            // appends it to the end of `proposals`.
+            proposals.push(Proposal({
+                name: proposalNames[i],
+                voteCount: 0
+            }));
+        }
+    }
+
+    // Give `voter` the right to vote on this ballot.
+    // May only be called by `chairperson`.
+    function giveRightToVote(address voter) public {
+        // If the first argument of `require` evaluates
+        // to `false`, execution terminates and all
+        // changes to the state and to Ether balances
+        // are reverted.
+        // This used to consume all gas in old EVM versions, but
+        // not anymore.
+        // It is often a good idea to use `require` to check if
+        // functions are called correctly.
+        // As a second argument, you can also provide an
+        // explanation about what went wrong.
+        require(
+            msg.sender == chairperson,
+            "Only chairperson can give right to vote."
+        );
+        require(
+            !voters[voter].voted,
+            "The voter already voted."
+        );
+        require(voters[voter].weight == 0);
+        voters[voter].weight = 1;
+    }
+
+    /// Delegate your vote to the voter `to`.
+    function delegate(address to) public {
+        // assigns reference
+        Voter storage sender = voters[msg.sender];
+        require(!sender.voted, "You already voted.");
+
+        require(to != msg.sender, "Self-delegation is disallowed.");
+
+        // Forward the delegation as long as
+        // `to` also delegated.
+        // In general, such loops are very dangerous,
+        // because if they run too long, they might
+        // need more gas than is available in a block.
+        // In this case, the delegation will not be executed,
+        // but in other situations, such loops might
+        // cause a contract to get "stuck" completely.
+        while (voters[to].delegate != address(0)) {
+            to = voters[to].delegate;
+
+            // We found a loop in the delegation, not allowed.
+            require(to != msg.sender, "Found loop in delegation.");
+        }
+
+        // Since `sender` is a reference, this
+        // modifies `voters[msg.sender].voted`
+        sender.voted = true;
+        sender.delegate = to;
+        Voter storage delegate_ = voters[to];
+        if (delegate_.voted) {
+            // If the delegate already voted,
+            // directly add to the number of votes
+            proposals[delegate_.vote].voteCount += sender.weight;
+        } else {
+            // If the delegate did not vote yet,
+            // add to her weight.
+            delegate_.weight += sender.weight;
+        }
+    }
+
+    /// Give your vote (including votes delegated to you)
+    /// to proposal `proposals[proposal].name`.
+    function vote(uint proposal) public {
+        Voter storage sender = voters[msg.sender];
+        require(sender.weight != 0, "Has no right to vote");
+        require(!sender.voted, "Already voted.");
+        sender.voted = true;
+        sender.vote = proposal;
+
+        // If `proposal` is out of the range of the array,
+        // this will throw automatically and revert all
+        // changes.
+        proposals[proposal].voteCount += sender.weight;
+    }
+
+    /// @dev Computes the winning proposal taking all
+    /// previous votes into account.
+    function winningProposal() public view
+            returns (uint winningProposal_)
+    {
+        uint winningVoteCount = 0;
+        for (uint p = 0; p < proposals.length; p++) {
+            if (proposals[p].voteCount > winningVoteCount) {
+                winningVoteCount = proposals[p].voteCount;
+                winningProposal_ = p;
+            }
+        }
+    }
+
+    // Calls winningProposal() function to get the index
+    // of the winner contained in the proposals array and then
+    // returns the name of the winner
+    function winnerName() public view
+            returns (bytes32 winnerName_)
+    {
+        winnerName_ = proposals[winningProposal()].name;
+    }
+}pragma solidity ^0.8.4;
+contract SimpleAuction {
+    // Parameters of the auction. Times are either
+    // absolute unix timestamps (seconds since 1970-01-01)
+    // or time periods in seconds.
+    address payable public beneficiary;
+    uint public auctionEndTime;
+
+    // Current state of the auction.
+    address public highestBidder;
+    uint public highestBid;
+
+    // Allowed withdrawals of previous bids
+    mapping(address => uint) pendingReturns;
+
+    // Set to true at the end, disallows any change.
+    // By default initialized to `false`.
+    bool ended;
+
+    // Events that will be emitted on changes.
+    event HighestBidIncreased(address bidder, uint amount);
+    event AuctionEnded(address winner, uint amount);
+
+    // Errors that describe failures.
+
+    // The triple-slash comments are so-called natspec
+    // comments. They will be shown when the user
+    // is asked to confirm a transaction or
+    // when an error is displayed.
+
+    /// The auction has already ended.
+    error AuctionAlreadyEnded();
+    /// There is already a higher or equal bid.
+    error BidNotHighEnough(uint highestBid);
+    /// The auction has not ended yet.
+    error AuctionNotYetEnded();
+    /// The function auctionEnd has already been called.
+    error AuctionEndAlreadyCalled();
+
+    /// Create a simple auction with `_biddingTime`
+    /// seconds bidding time on behalf of the
+    /// beneficiary address `_beneficiary`.
+    constructor(
+        uint _biddingTime,
+        address payable _beneficiary
+    ) {
+        beneficiary = _beneficiary;
+        auctionEndTime = block.timestamp + _biddingTime;
+    }
+
+    /// Bid on the auction with the value sent
+    /// together with this transaction.
+    /// The value will only be refunded if the
+    /// auction is not won.
+    function bid() public payable {
+        // No arguments are necessary, all
+        // information is already part of
+        // the transaction. The keyword payable
+        // is required for the function to
+        // be able to receive Ether.
+
+        // Revert the call if the bidding
+        // period is over.
+        if (block.timestamp > auctionEndTime)
+            revert AuctionAlreadyEnded();
+
+        // If the bid is not higher, send the
+        // money back (the revert statement
+        // will revert all changes in this
+        // function execution including
+        // it having received the money).
+        if (msg.value <= highestBid)
+            revert BidNotHighEnough(highestBid);
+
+        if (highestBid != 0) {
+            // Sending back the money by simply using
+            // highestBidder.send(highestBid) is a security risk
+            // because it could execute an untrusted contract.
+            // It is always safer to let the recipients
+            // withdraw their money themselves.
+            pendingReturns[highestBidder] += highestBid;
+        }
+        highestBidder = msg.sender;
+        highestBid = msg.value;
+        emit HighestBidIncreased(msg.sender, msg.value);
+    }
+
+    /// Withdraw a bid that was overbid.
+    function withdraw() public returns (bool) {
+        uint amount = pendingReturns[msg.sender];
+        if (amount > 0) {
+            // It is important to set this to zero because the recipient
+            // can call this function again as part of the receiving call
+            // before `send` returns.
+            pendingReturns[msg.sender] = 0;
+
+            if (!payable(msg.sender).send(amount)) {
+                // No need to call throw here, just reset the amount owing
+                pendingReturns[msg.sender] = amount;
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// End the auction and send the highest bid
+    /// to the beneficiary.
+    function auctionEnd() public {
+        // It is a good guideline to structure functions that interact
+        // with other contracts (i.e. they call functions or send Ether)
+        // into three phases:
+        // 1. checking conditions
+        // 2. performing actions (potentially changing conditions)
+        // 3. interacting with other contracts
+        // If these phases are mixed up, the other contract could call
+        // back into the current contract and modify the state or cause
+        // effects (ether payout) to be performed multiple times.
+        // If functions called internally include interaction with external
+        // contracts, they also have to be considered interaction with
+        // external contracts.
+
+        // 1. Conditions
+        if (block.timestamp < auctionEndTime)
+            revert AuctionNotYetEnded();
+        if (ended)
+            revert AuctionEndAlreadyCalled();
+
+        // 2. Effects
+        ended = true;
+        emit AuctionEnded(highestBidder, highestBid);
+
+        // 3. Interaction
+        beneficiary.transfer(highestBid);
+    }
+}// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.4;
+contract BlindAuction {
+    struct Bid {
+        bytes32 blindedBid;
+        uint deposit;
+    }
+
+    address payable public beneficiary;
+    uint public biddingEnd;
+    uint public revealEnd;
+    bool public ended;
+
+    mapping(address => Bid[]) public bids;
+
+    address public highestBidder;
+    uint public highestBid;
+
+    // Allowed withdrawals of previous bids
+    mapping(address => uint) pendingReturns;
+
+    event AuctionEnded(address winner, uint highestBid);
+
+    // Errors that describe failures.
+
+    /// The function has been called too early.
+    /// Try again at `time`.
+    error TooEarly(uint time);
+    /// The function has been called too late.
+    /// It cannot be called after `time`.
+    error TooLate(uint time);
+    /// The function auctionEnd has already been called.
+    error AuctionEndAlreadyCalled();
+
+    // Modifiers are a convenient way to validate inputs to
+    // functions. `onlyBefore` is applied to `bid` below:
+    // The new function body is the modifier's body where
+    // `_` is replaced by the old function body.
+    modifier onlyBefore(uint _time) {
+        if (block.timestamp >= _time) revert TooLate(_time);
+        _;
+    }
+    modifier onlyAfter(uint _time) {
+        if (block.timestamp <= _time) revert TooEarly(_time);
+        _;
+    }
+
+    constructor(
+        uint _biddingTime,
+        uint _revealTime,
+        address payable _beneficiary
+    ) {
+        beneficiary = _beneficiary;
+        biddingEnd = block.timestamp + _biddingTime;
+        revealEnd = biddingEnd + _revealTime;
+    }
+
+    /// Place a blinded bid with `_blindedBid` =
+    /// keccak256(abi.encodePacked(value, fake, secret)).
+    /// The sent ether is only refunded if the bid is correctly
+    /// revealed in the revealing phase. The bid is valid if the
+    /// ether sent together with the bid is at least "value" and
+    /// "fake" is not true. Setting "fake" to true and sending
+    /// not the exact amount are ways to hide the real bid but
+    /// still make the required deposit. The same address can
+    /// place multiple bids.
+    function bid(bytes32 _blindedBid)
+        public
+        payable
+        onlyBefore(biddingEnd)
+    {
+        bids[msg.sender].push(Bid({
+            blindedBid: _blindedBid,
+            deposit: msg.value
+        }));
+    }
+
+    /// Reveal your blinded bids. You will get a refund for all
+    /// correctly blinded invalid bids and for all bids except for
+    /// the totally highest.
+    function reveal(
+        uint[] memory _values,
+        bool[] memory _fake,
+        bytes32[] memory _secret
+    )
+        public
+        onlyAfter(biddingEnd)
+        onlyBefore(revealEnd)
+    {
+        uint length = bids[msg.sender].length;
+        require(_values.length == length);
+        require(_fake.length == length);
+        require(_secret.length == length);
+
+        uint refund;
+        for (uint i = 0; i < length; i++) {
+            Bid storage bidToCheck = bids[msg.sender][i];
+            (uint value, bool fake, bytes32 secret) =
+                    (_values[i], _fake[i], _secret[i]);
+            if (bidToCheck.blindedBid != keccak256(abi.encodePacked(value, fake, secret))) {
+                // Bid was not actually revealed.
+                // Do not refund deposit.
+                continue;
+            }
+            refund += bidToCheck.deposit;
+            if (!fake && bidToCheck.deposit >= value) {
+                if (placeBid(msg.sender, value))
+                    refund -= value;
+            }
+            // Make it impossible for the sender to re-claim
+            // the same deposit.
+            bidToCheck.blindedBid = bytes32(0);
+        }
+        payable(msg.sender).transfer(refund);
+    }
+
+    /// Withdraw a bid that was overbid.
+    function withdraw() public {
+        uint amount = pendingReturns[msg.sender];
+        if (amount > 0) {
+            // It is important to set this to zero because the recipient
+            // can call this function again as part of the receiving call
+            // before `transfer` returns (see the remark above about
+            // conditions -> effects -> interaction).
+            pendingReturns[msg.sender] = 0;
+
+            payable(msg.sender).transfer(amount);
+        }
+    }
+
+    /// End the auction and send the highest bid
+    /// to the beneficiary.
+    function auctionEnd()
+        public
+        onlyAfter(revealEnd)
+    {
+        if (ended) revert AuctionEndAlreadyCalled();
+        emit AuctionEnded(highestBidder, highestBid);
+        ended = true;
+        beneficiary.transfer(highestBid);
+    }
+
+    // This is an "internal" function which means that it
+    // can only be called from the contract itself (or from
+    // derived contracts).
+    function placeBid(address bidder, uint value) internal
+            returns (bool success)
+    {
+        if (value <= highestBid) {
+            return false;
+        }
+        if (highestBidder != address(0)) {
+            // Refund the previously highest bidder.
+            pendingReturns[highestBidder] += highestBid;
+        }
+        highestBid = value;
+        highestBidder = bidder;
+        return true;
+    }
+}// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.4;
+contract Purchase {
+    uint public value;
+    address payable public seller;
+    address payable public buyer;
+
+    enum State { Created, Locked, Release, Inactive }
+    // The state variable has a default value of the first member, `State.created`
+    State public state;
+
+    modifier condition(bool _condition) {
+        require(_condition);
+        _;
+    }
+
+    /// Only the buyer can call this function.
+    error OnlyBuyer();
+    /// Only the seller can call this function.
+    error OnlySeller();
+    /// The function cannot be called at the current state.
+    error InvalidState();
+    /// The provided value has to be even.
+    error ValueNotEven();
+
+    modifier onlyBuyer() {
+        if (msg.sender != buyer)
+            revert OnlyBuyer();
+        _;
+    }
+
+    modifier onlySeller() {
+        if (msg.sender != seller)
+            revert OnlySeller();
+        _;
+    }
+
+    modifier inState(State _state) {
+        if (state != _state)
+            revert InvalidState();
+        _;
+    }
+
+    event Aborted();
+    event PurchaseConfirmed();
+    event ItemReceived();
+    event SellerRefunded();
+
+    // Ensure that `msg.value` is an even number.
+    // Division will truncate if it is an odd number.
+    // Check via multiplication that it wasn't an odd number.
+    constructor() payable {
+        seller = payable(msg.sender);
+        value = msg.value / 2;
+        if ((2 * value) != msg.value)
+            revert ValueNotEven();
+    }
+
+    /// Abort the purchase and reclaim the ether.
+    /// Can only be called by the seller before
+    /// the contract is locked.
+    function abort()
+        public
+        onlySeller
+        inState(State.Created)
+    {
+        emit Aborted();
+        state = State.Inactive;
+        // We use transfer here directly. It is
+        // reentrancy-safe, because it is the
+        // last call in this function and we
+        // already changed the state.
+        seller.transfer(address(this).balance);
+    }
+
+    /// Confirm the purchase as buyer.
+    /// Transaction has to include `2 * value` ether.
+    /// The ether will be locked until confirmReceived
+    /// is called.
+    function confirmPurchase()
+        public
+        inState(State.Created)
+        condition(msg.value == (2 * value))
+        payable
+    {
+        emit PurchaseConfirmed();
+        buyer = payable(msg.sender);
+        state = State.Locked;
+    }
+
+    /// Confirm that you (the buyer) received the item.
+    /// This will release the locked ether.
+    function confirmReceived()
+        public
+        onlyBuyer
+        inState(State.Locked)
+    {
+        emit ItemReceived();
+        // It is important to change the state first because
+        // otherwise, the contracts called using `send` below
+        // can call in again here.
+        state = State.Release;
+
+        buyer.transfer(value);
+    }
+
+    /// This function refunds the seller, i.e.
+    /// pays back the locked funds of the seller.
+    function refundSeller()
+        public
+        onlySeller
+        inState(State.Release)
+    {
+        emit SellerRefunded();
+        // It is important to change the state first because
+        // otherwise, the contracts called using `send` below
+        // can call in again here.
+        state = State.Inactive;
+
+        seller.transfer(3 * value);
+    }
+}pragma solidity >=0.7.0 <0.9.0;
+contract ReceiverPays {
+    address owner = msg.sender;
+
+    mapping(uint256 => bool) usedNonces;
+
+    constructor() payable {}
+
+    function claimPayment(uint256 amount, uint256 nonce, bytes memory signature) public {
+        require(!usedNonces[nonce]);
+        usedNonces[nonce] = true;
+
+        // this recreates the message that was signed on the client
+        bytes32 message = prefixed(keccak256(abi.encodePacked(msg.sender, amount, nonce, this)));
+
+        require(recoverSigner(message, signature) == owner);
+
+        payable(msg.sender).transfer(amount);
+    }
+
+    /// destroy the contract and reclaim the leftover funds.
+    function shutdown() public {
+        require(msg.sender == owner);
+        selfdestruct(payable(msg.sender));
+    }
+
+    /// signature methods.
+    function splitSignature(bytes memory sig)
+        internal
+        pure
+        returns (uint8 v, bytes32 r, bytes32 s)
+    {
+        require(sig.length == 65);
+
+        assembly {
+            // first 32 bytes, after the length prefix.
+            r := mload(add(sig, 32))
+            // second 32 bytes.
+            s := mload(add(sig, 64))
+            // final byte (first byte of the next 32 bytes).
+            v := byte(0, mload(add(sig, 96)))
+        }
+
+        return (v, r, s);
+    }
+
+    function recoverSigner(bytes32 message, bytes memory sig)
+        internal
+        pure
+        returns (address)
+    {
+        (uint8 v, bytes32 r, bytes32 s) = splitSignature(sig);
+
+        return ecrecover(message, v, r, s);
+    }
+
+    /// builds a prefixed hash to mimic the behavior of eth_sign.
+    function prefixed(bytes32 hash) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", hash));
+    }
+}pragma solidity >=0.7.0 <0.9.0;
+contract SimplePaymentChannel {
+    address payable public sender;      // The account sending payments.
+    address payable public recipient;   // The account receiving the payments.
+    uint256 public expiration;  // Timeout in case the recipient never closes.
+
+    constructor (address payable _recipient, uint256 duration)
+        payable
+    {
+        sender = payable(msg.sender);
+        recipient = _recipient;
+        expiration = block.timestamp + duration;
+    }
+
+    /// the recipient can close the channel at any time by presenting a
+    /// signed amount from the sender. the recipient will be sent that amount,
+    /// and the remainder will go back to the sender
+    function close(uint256 amount, bytes memory signature) public {
+        require(msg.sender == recipient);
+        require(isValidSignature(amount, signature));
+
+        recipient.transfer(amount);
+        selfdestruct(sender);
+    }
+
+    /// the sender can extend the expiration at any time
+    function extend(uint256 newExpiration) public {
+        require(msg.sender == sender);
+        require(newExpiration > expiration);
+
+        expiration = newExpiration;
+    }
+
+    /// if the timeout is reached without the recipient closing the channel,
+    /// then the Ether is released back to the sender.
+    function claimTimeout() public {
+        require(block.timestamp >= expiration);
+        selfdestruct(sender);
+    }
+
+    function isValidSignature(uint256 amount, bytes memory signature)
+        internal
+        view
+        returns (bool)
+    {
+        bytes32 message = prefixed(keccak256(abi.encodePacked(this, amount)));
+
+        // check that the signature is from the payment sender
+        return recoverSigner(message, signature) == sender;
+    }
+
+    /// All functions below this are just taken from the chapter
+    /// 'creating and verifying signatures' chapter.
+
+    function splitSignature(bytes memory sig)
+        internal
+        pure
+        returns (uint8 v, bytes32 r, bytes32 s)
+    {
+        require(sig.length == 65);
+
+        assembly {
+            // first 32 bytes, after the length prefix
+            r := mload(add(sig, 32))
+            // second 32 bytes
+            s := mload(add(sig, 64))
+            // final byte (first byte of the next 32 bytes)
+            v := byte(0, mload(add(sig, 96)))
+        }
+
+        return (v, r, s);
+    }
+
+    function recoverSigner(bytes32 message, bytes memory sig)
+        internal
+        pure
+        returns (address)
+    {
+        (uint8 v, bytes32 r, bytes32 s) = splitSignature(sig);
+
+        return ecrecover(message, v, r, s);
+    }
+
+    /// builds a prefixed hash to mimic the behavior of eth_sign.
+    function prefixed(bytes32 hash) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", hash));
+    }
+}
