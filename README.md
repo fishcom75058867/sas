@@ -17,8 +17,6 @@ The total SAS issuance is 96 million, of which 30% is used for the maintenance o
 The super nodes will be rewarded with 2 SAS per block after the launch. After the public network goes online, the candidates for the super node election must hold a total issue of
 Candidates for the super node election must hold five ten thousandths of the total issue, which is 48000 SAS.
 
-Translated with www.DeepL.com/Translator (free version)
-
 #### To Support Ethereum Development Tool
 
 SAS support Ethereum development tools, like web3.js, but SAS address it's not prefixed with `0x` like Ethereum, so developer will add prefix `0x` if you use like web3.js
